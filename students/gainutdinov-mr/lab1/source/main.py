@@ -5,25 +5,20 @@
 """
 
 # 1. выбрать датасет для классификации, например на [kaggle](https://www.kaggle.com/datasets?&tags=13304-Clustering);
-import os
+from pathlib import Path
 
 import kagglehub
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-LEARNING_RATE = 0.01
-FORGETTING_RATE = 0.3
+LEARNING_RATE = 0.0003
+FORGETTING_RATE = 0.01
+MOMENTUM = 0.9
+REGULARIZATION = 0.1
 
 
-# Download latest version
-path = kagglehub.dataset_download("teejmahal20/airline-passenger-satisfaction")
 
-print("Path to dataset files:", path)
-
-
-list_of_files = os.listdir(path)
-print(f"List of files in dataset directory: {list_of_files}\n")
 
 
 # print(f'Path to dataset file: {path_to_zoo}\n')
@@ -193,12 +188,16 @@ def calculate_margin_i(features, w, target):
     ) * target  # Получается число - Margin для объекта с фичами X[i], таргетом y[i].
 
 
-def plot_margin(margin):
-    # TODO: Отсортировать значения margin, для нормального красивого графика (или использовать scatter?)
-    plt.figure(figsize=(12, 6))
-    plt.plot(margin, label="Margin/Отступ")
-    plt.plot(np.zeros_like(margin), label="zero level")
-    plt.show()
+def plot_margin(margin, title, output_path):
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.plot(np.sort(margin), label="Отступы")
+    ax.axhline(0, color="red", linestyle="--", label="Граница классификации")
+    ax.axhline(1, color="green", linestyle=":", label="Минимум потери")
+    ax.set(title=title, xlabel="Объекты, отсортированные по отступу", ylabel="M")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=160)
+    plt.close(fig)
 
 
 def analyze_margin(margin):
@@ -251,19 +250,46 @@ def update_quality(old_quality, current_loss):
     # return new_q_value = FORGETTING_RATE * Loss (x_i) + (1 - FORGETTING_RATE) * old_q_value
 
 
+def get_presentation_indices(X, y, weights, presentation, rng=None):
+    rng = np.random.default_rng(rng)
+    if presentation == "random":
+        return rng.permutation(len(X))
+
+    if presentation == "margin":
+        margins = calculate_margin(X, weights, y)
+        probabilities = 1 / (1 + np.abs(margins))
+        probabilities /= probabilities.sum()
+        # Выбор с возвращением: объекты у границы могут встретиться чаще.
+        return rng.choice(len(X), size=len(X), replace=True, p=probabilities)
+
+    raise ValueError("presentation это или 'random' или 'margin'")
+
+
 # 5. реализовать метод стохастического градиентного спуска с инерцией;
 
 
 def SGD_with_momentum(
-    X, y, initial_weights, max_iterations, momentum=0.9, regularization=0.1
+    X,
+    y,
+    initial_weights,
+    max_iterations,
+    momentum=0.9,
+    regularization=0.1,
+    presentation="random",
+    random_state=None,
 ):
+    if len(X) == 0:
+        raise ValueError("Обучающая выборка не должна быть пустой")
+    if presentation not in ("random", "margin"):
+        raise ValueError("presentation это или 'random' или 'margin'")
+
+    rng = np.random.default_rng(random_state)
     weights = initial_weights.copy()
-    tolerance = 1e-3
 
     subset_size = min(
         100, len(X)
     )  # Инициализируем qaulity по случайному подмножеству из 100 элементов, можно больше, можно меньше. Можно поиграться
-    subset_indices = np.random.choice(len(X), size=subset_size, replace=False)
+    subset_indices = rng.choice(len(X), size=subset_size, replace=False)
 
     initial_margins = calculate_margin(X[subset_indices], weights, y[subset_indices])
 
@@ -279,32 +305,40 @@ def SGD_with_momentum(
     # v = gamma * v + (1 - gamma) * grad(Loss(w,x[i])) # - velocity
     # w = w - LEARNING_RATE * v # weights
 
-    for iteration in range(max_iterations):
-        index = np.random.randint(
-            len(X)
-        )  # TODO: Сейчас реализация SGD с возвращеним, но что если надо без?
-        sample = X[index]
-        target = y[index]
-        # Что если для этого вообще надо будет написать отдельный дата лоадер, потому что потом попросят предъявлять объекты в одном порядке, потом в другом и т.п.
+    iteration = 0
+    while iteration < max_iterations:
+        presentation_order = get_presentation_indices(
+            X,
+            y,
+            weights,
+            presentation,
+            rng,
+        )
 
-        margin = calculate_margin(sample, weights, target)
-        current_loss = loss_function(margin)
-        gradient = loss_gradient(
-            sample, weights, target
-        )  # TODO: Можно потом подумать как спользовать момент нестерова
-        # gradient = loss_gradient(sample, weights - LEARNING_RATE*momentum*velocity, target)  # Например это будет выглядеть вот так вот.
+        for index in presentation_order:
+            sample = X[index]
+            target = y[index]
 
-        # L2 регуляризация
-        l2_penalty, l2_gradient = l2_penalty_and_gradient(weights, regularization)
-        current_loss += l2_penalty
-        gradient += l2_gradient  # w0 тоже тогда попало под регуляризацию, если оно есть. Чтобы поменять - regularization * weights
+            margin = calculate_margin(sample, weights, target)
+            current_loss = loss_function(margin)
+            gradient = loss_gradient(sample, weights, target)
 
-        velocity = momentum * velocity + (1 - momentum) * gradient
-        weights = weights - LEARNING_RATE * velocity
-        quality = update_quality(quality, current_loss)
-        quality_history.append(quality)
-        # if abs(quality_history[-1] - quality[-2]) < tolerance:
-        #     break
+            # L2 регуляризация
+            l2_penalty, l2_gradient = l2_penalty_and_gradient(
+                weights,
+                regularization,
+            )
+            current_loss += l2_penalty
+            gradient += l2_gradient  # l2_gradient[0] == 0, поэтому w0 не регуляризуется
+
+            velocity = momentum * velocity + (1 - momentum) * gradient
+            weights = weights - LEARNING_RATE * velocity
+            quality = update_quality(quality, current_loss)
+            quality_history.append(quality)
+
+            iteration += 1
+            if iteration >= max_iterations:
+                break
 
     return weights, quality_history
 
@@ -519,12 +553,126 @@ def init_weights_v2(X, y):
 #    3. обучить со случайным предъявлением и с п.8;
 
 
+def init_weights_random(n_features, rng):
+    # n_features включает столбец единиц для свободного коэффициента.
+    if n_features < 1:
+        raise ValueError("n_features должен быть положительным")
+    bound = 1.0 / (2 * n_features)
+    return rng.uniform(low=-bound, high=bound, size=n_features)
+
+
+def calculate_regularized_quality(X, y, weights, regularization):
+    # Точный функционал на всей переданной выборке, без сглаживания.
+    margins = calculate_margin(X, weights, y)
+    penalty, _ = l2_penalty_and_gradient(weights, regularization)
+    return float(np.mean(loss_function(margins)) + penalty)
+
+
+def train_with_multistart(
+    X,
+    y,
+    n_starts,
+    max_iterations,
+    momentum=0.9,
+    regularization=0.1,
+    presentation="random",
+    random_state=None,
+):
+    if n_starts < 1:
+        raise ValueError("n_starts должен быть положительным")
+    if max_iterations < 1:
+        raise ValueError("max_iterations должен быть положительным")
+
+    rng = np.random.default_rng(random_state)
+    best_quality = np.inf
+    best_weights = None
+    best_history = None
+    results = []
+
+    for start in range(n_starts):
+        # Seed позволяет повторить и инициализацию, и обучение этого старта.
+        seed = int(rng.integers(0, 2**32))
+        start_rng = np.random.default_rng(seed)
+        initial_weights = init_weights_random(X.shape[1], start_rng)
+        trained_weights, history = SGD_with_momentum(
+            X,
+            y,
+            initial_weights,
+            max_iterations,
+            momentum=momentum,
+            regularization=regularization,
+            presentation=presentation,
+            random_state=start_rng,
+        )
+
+        quality = calculate_regularized_quality(
+            X, y, trained_weights, regularization
+        )
+        # Разошедшийся запуск сохраняем для анализа, но не выбираем лучшим.
+        is_finite = bool(np.isfinite(trained_weights).all() and np.isfinite(quality))
+        results.append({
+            "start": start + 1,
+            "seed": seed,
+            "initial_weights": initial_weights,
+            "weights": trained_weights,
+            "quality": quality,
+            "is_finite": is_finite,
+        })
+
+        if is_finite and quality < best_quality:
+            best_quality = quality
+            best_weights = trained_weights.copy()
+            best_history = history
+
+    if best_weights is None:
+        raise RuntimeError("Все старты разошлись: проверьте темп обучения и данные")
+
+    return best_weights, best_history, results
+
+
 # 10. оценить качество классификации;
+def predict(X, weights):
+    scores = X @ weights
+    return np.where(scores >= 0, 1, -1)
 
+def classification_metrics(y_true, y_pred):
+    """Метрики для меток {-1, +1}; положительный класс — +1.
 
-# TODO: METRICS: Precision, Accuracy, Recall, F norm; Confusion Matrix;
-def precision(model, target):
-    return 0
+    Матрица ошибок: строки — истинный класс, столбцы — предсказанный.
+    Порядок классов [-1, +1], поэтому матрица имеет вид [[TN, FP], [FN, TP]].
+    При нулевом знаменателе precision, recall и F1 возвращаются как 0.0.
+    """
+    y_true = np.asarray(y_true)
+    y_pred = np.asarray(y_pred)
+
+    if y_true.ndim != 1 or y_pred.ndim != 1:
+        raise ValueError("y_true и y_pred должны быть одномерными массивами")
+    if y_true.shape != y_pred.shape or y_true.size == 0:
+        raise ValueError("y_true и y_pred должны иметь одинаковую ненулевую длину")
+    if not (np.isin(y_true, [-1, 1]).all() and np.isin(y_pred, [-1, 1]).all()):
+        raise ValueError("Метки должны быть равны -1 или +1")
+
+    tp = int(np.sum((y_true == 1) & (y_pred == 1)))
+    tn = int(np.sum((y_true == -1) & (y_pred == -1)))
+    fp = int(np.sum((y_true == -1) & (y_pred == 1)))
+    fn = int(np.sum((y_true == 1) & (y_pred == -1)))
+
+    accuracy = (tp + tn) / y_true.size
+    precision = tp / (tp + fp) if tp + fp > 0 else 0.0
+    recall = tp / (tp + fn) if tp + fn > 0 else 0.0
+    f1 = 2 * tp / (2 * tp + fp + fn) if 2 * tp + fp + fn > 0 else 0.0
+
+    return {
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+        "tp": tp,
+        "tn": tn,
+        "fp": fp,
+        "fn": fn,
+        "confusion_matrix": np.array([[tn, fp], [fn, tp]]),
+    }
 
 
 def MeanSquareError(model, target):
@@ -537,100 +685,181 @@ def MeanSquareError(model, target):
 # 12. подготовить отчет.
 # TODO: Написать ридми
 
+if __name__ == "__main__":
+    path = Path(kagglehub.dataset_download("teejmahal20/airline-passenger-satisfaction"))
+    train_path = path / "train.csv"
+    test_path = path / "test.csv"
 
-test_path = os.path.join(path, list_of_files[0])
-train_path = os.path.join(path, list_of_files[1])
+    train_data = prepare_data(train_path)
+    test_data = prepare_data(test_path)
+    X_train = train_data.drop(["satisfaction"], axis=1)
+    y_train = train_data["satisfaction"]
+    X_test = test_data.drop(["satisfaction"], axis=1)
+    y_test = test_data["satisfaction"]
+    X_train = X_train.to_numpy(dtype=float)
+    y_train = y_train.to_numpy(dtype=float)
+    X_test = X_test.to_numpy(dtype=float)
+    y_test = y_test.to_numpy(dtype=float)
 
-train_data = prepare_data(train_path)
-test_data = prepare_data(test_path)
-
-# print("Train data:\n", train_data)
-# print("Test data:\n", test_data)
-
-
-X_train = train_data.drop(["satisfaction"], axis=1)
-y_train = train_data["satisfaction"]
-
-X_test = test_data.drop(["satisfaction"], axis=1)
-y_test = test_data["satisfaction"]
-
-X_train = X_train.to_numpy(dtype=float)
-y_train = y_train.to_numpy(dtype=float)
-
-X_test = X_test.to_numpy(dtype=float)
-y_test = y_test.to_numpy(dtype=float)
-
-X_train, X_test, feature_mean, feature_std = standardize_data(
-    X_train,
-    X_test,
-)
-# И еще добавим дополнительный столбец, чтобы был параметр w_0
-X_train = np.column_stack(
-    [
-        np.ones(X_train.shape[0]),
+    X_train, X_test, feature_mean, feature_std = standardize_data(
         X_train,
-    ]
-)
-
-X_test = np.column_stack(
-    [
-        np.ones(X_test.shape[0]),
         X_test,
-    ]
-)
-
-
-weights = init_weights_v2(X_train, y_train)
-
-max_iterations=3 * len(X_train)
-
-trained_weights, quality_history = SGD_with_momentum(
-    X_train,
-    y_train,
-    weights,
-    max_iterations=max_iterations,
-)
-
-# Наискорейший sgd
-steepest_weights, steepest_quality_history = (
-    stochastic_steepest_gradient_descent(
-        X_train,
-        y_train,
-        weights,
-        max_iterations=max_iterations,
     )
-)
+    # Первый столбец равен единице: его коэффициент и есть свободный член w0.
+    X_train = np.column_stack([np.ones(len(X_train)), X_train])
+    X_test = np.column_stack([np.ones(len(X_test)), X_test])
 
-# print(steepest_quality_history[-1])
+    initial_weights = init_weights_v2(X_train, y_train)
+    epochs = 10
+    max_iterations = epochs * len(X_train)
+    random_state = 42
+    multistart_runs = 5
 
-batch_weights, batch_quality_history, batch_step_history = batch_steepest_gradient_descent(
-    X_train,
-    y_train,
-    weights,
-    max_iterations=100,
-)
+    # В каждой строке — модель, вычисленная из одних и тех же train-признаков.
+    models = []
 
-print("Iterations:", len(batch_step_history))
-print("Initial Q:", batch_quality_history[0])
-print("Final Q:", batch_quality_history[-1])
-print("Last step:", batch_step_history[-1])
+    correlation_random_weights, correlation_random_history = SGD_with_momentum(
+        X_train, y_train, initial_weights, max_iterations,
+        momentum=MOMENTUM, regularization=REGULARIZATION,
+        presentation="random", random_state=random_state,
+    )
+    models.append(("Корреляция + случайный порядок", correlation_random_weights,
+                   correlation_random_history, REGULARIZATION))
 
-quality_differences = np.diff(batch_quality_history)
+    multistart_random_weights, multistart_random_history, random_starts = train_with_multistart(
+        X_train, y_train, n_starts=multistart_runs, max_iterations=max_iterations,
+        momentum=MOMENTUM, regularization=REGULARIZATION,
+        presentation="random", random_state=random_state,
+    )
+    models.append(("Мультистарт + случайный порядок", multistart_random_weights,
+                   multistart_random_history, REGULARIZATION))
 
-print(
-    "Quality is non-increasing:",
-    np.all(quality_differences <= 1e-12),
-)
-# # Пустой тест без обучений, просто инициализированных весов.
-# random_index = np.random.randint(0,len(X_train))
-# ri = random_index
-# sample_0 = X_train.iloc[ri].to_numpy()
-# target_0 = y_train.iloc[ri]
+    correlation_margin_weights, correlation_margin_history = SGD_with_momentum(
+        X_train, y_train, initial_weights, max_iterations,
+        momentum=MOMENTUM, regularization=REGULARIZATION,
+        presentation="margin", random_state=random_state,
+    )
+    models.append(("Корреляция + выбор по |M|", correlation_margin_weights,
+                   correlation_margin_history, REGULARIZATION))
 
-# print(f"error = {calculate_margin_i(sample_0, weights, target_0)}")
-# print(f"sample = {sample_0}\n"
-#       f"target = {target_0}")
-# # l x 1 ; 1xl
-# output = np.sign(weights.T @ sample_0)
-# print(f"output = {output}")
-# # print(MeanSquareError())
+    multistart_margin_weights, multistart_margin_history, margin_starts = train_with_multistart(
+        X_train, y_train, n_starts=multistart_runs, max_iterations=max_iterations,
+        momentum=MOMENTUM, regularization=REGULARIZATION,
+        presentation="margin", random_state=random_state,
+    )
+    models.append(("Мультистарт + выбор по |M|", multistart_margin_weights,
+                   multistart_margin_history, REGULARIZATION))
+
+    # Формула оптимального шага для одного объекта не учитывает L2 и momentum.
+    np.random.seed(random_state)
+    stochastic_weights, stochastic_history = stochastic_steepest_gradient_descent(
+        X_train, y_train, initial_weights, max_iterations,
+    )
+    models.append(("Стохастический скорейший спуск", stochastic_weights,
+                   stochastic_history, 0.0))
+
+    batch_weights, batch_history, batch_steps = batch_steepest_gradient_descent(
+        X_train, y_train, initial_weights, max_iterations=10000,
+    )
+    models.append(("Пакетный скорейший спуск", batch_weights,
+                   batch_history, 0.0))
+
+    from sklearn.linear_model import RidgeClassifier
+
+    ridge_l2 = RidgeClassifier(alpha=len(X_train) * REGULARIZATION)
+    ridge_l2.fit(X_train[:, 1:], y_train)
+    ridge_l2_weights = np.r_[ridge_l2.intercept_, ridge_l2.coef_.ravel()]
+    models.append(("sklearn RidgeClassifier + L2", ridge_l2_weights, None,
+                   REGULARIZATION))
+
+    ridge_no_l2 = RidgeClassifier(alpha=0.0)
+    ridge_no_l2.fit(X_train[:, 1:], y_train)
+    ridge_no_l2_weights = np.r_[ridge_no_l2.intercept_, ridge_no_l2.coef_.ravel()]
+    models.append(("sklearn RidgeClassifier без L2", ridge_no_l2_weights,
+                   None, 0.0))
+
+    print(f"Train: {len(X_train)}, test: {len(X_test)}, признаков с w0: {X_train.shape[1]}")
+    print(f"Шаг SGD: {LEARNING_RATE}, momentum: {MOMENTUM}, L2: {REGULARIZATION}")
+    print(f"SGD: {epochs} прохода, мультистарт: {multistart_runs} запусков, seed: {random_state}")
+    for mode, runs in (("случайный порядок", random_starts),
+                       ("выбор по |M|", margin_starts)):
+        best_start = min((run for run in runs if run["is_finite"]),
+                         key=lambda run: run["quality"])
+        print(f"Мультистарт ({mode}): выбран старт {best_start['start']} "
+              f"из {multistart_runs}, train Q_reg={best_start['quality']:.6f}")
+
+    output_dir = Path(__file__).parent.parent / "results" / "main"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    plt.switch_backend("Agg")
+
+    metrics_for_plot = []
+    for model_number, (name, weights, history, regularization) in enumerate(models, start=1):
+        train_metrics = classification_metrics(y_train, predict(X_train, weights))
+        test_metrics = classification_metrics(y_test, predict(X_test, weights))
+        train_loss = np.mean(loss_function(calculate_margin(X_train, weights, y_train)))
+        test_margins = calculate_margin(X_test, weights, y_test)
+        test_loss = np.mean(loss_function(test_margins))
+        train_objective = calculate_regularized_quality(
+            X_train, y_train, weights, regularization,
+        )
+        print(f"\n{name}")
+        print(f"  Train: accuracy={train_metrics['accuracy']:.4f}, "
+              f"precision={train_metrics['precision']:.4f}, "
+              f"recall={train_metrics['recall']:.4f}, F1={train_metrics['f1']:.4f}, "
+              f"loss={train_loss:.4f}, Q_reg={train_objective:.4f}")
+        print(f"  Test:  accuracy={test_metrics['accuracy']:.4f}, "
+              f"precision={test_metrics['precision']:.4f}, "
+              f"recall={test_metrics['recall']:.4f}, F1={test_metrics['f1']:.4f}, "
+              f"loss={test_loss:.4f}")
+        print(f"  TP={test_metrics['tp']}, TN={test_metrics['tn']}, "
+              f"FP={test_metrics['fp']}, FN={test_metrics['fn']}")
+        print(f"  Матрица ошибок [[TN, FP], [FN, TP]]: "
+              f"{test_metrics['confusion_matrix'].tolist()}")
+        print("  Анализ отступов на test:")
+        analyze_margin(test_margins)
+        margin_plot = output_dir / f"margin_{model_number:02d}.png"
+        plot_margin(test_margins, name, margin_plot)
+        print(f"  График отступов: {margin_plot}")
+        metrics_for_plot.append(test_metrics)
+
+    fig, axes = plt.subplots(1, 3, figsize=(17, 4))
+    for name, _, history, _ in models[:4]:
+        indices = np.linspace(0, len(history) - 1, min(2000, len(history)), dtype=int)
+        axes[0].plot(indices / len(X_train), np.asarray(history)[indices],
+                     label=name, linewidth=0.8)
+    axes[0].set(title="SGD: рекуррентная оценка Q", xlabel="Проходы", ylabel="Q")
+    axes[0].legend(fontsize=7)
+
+    indices = np.linspace(0, len(stochastic_history) - 1,
+                          min(2000, len(stochastic_history)), dtype=int)
+    axes[1].plot(indices / len(X_train), np.asarray(stochastic_history)[indices],
+                 color="tab:orange", linewidth=0.8)
+    axes[1].set(title="Стохастический скорейший: рекуррентный Q",
+                xlabel="Эквиваленты проходов", ylabel="Q")
+
+    axes[2].plot(np.arange(len(batch_history)), batch_history, label="Batch")
+    axes[2].axhline(calculate_regularized_quality(X_train, y_train,
+                       ridge_no_l2_weights, 0.0), linestyle="--", color="black",
+                    label="Ridge без L2")
+    axes[2].set(title="Пакетный спуск: точный train loss", xlabel="Итерации",
+                ylabel="Loss")
+    axes[2].legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(output_dir / "training_curves.png", dpi=160)
+    plt.close(fig)
+
+    labels = [name for name, _, _, _ in models]
+    x_positions = np.arange(len(labels))
+    width = 0.36
+    fig, ax = plt.subplots(figsize=(12, 5))
+    ax.bar(x_positions - width / 2,
+           [m["accuracy"] for m in metrics_for_plot], width, label="Accuracy")
+    ax.bar(x_positions + width / 2,
+           [m["f1"] for m in metrics_for_plot], width, label="F1 (+1)")
+    ax.set(ylim=(0, 1), ylabel="Значение метрики", title="Качество на test")
+    ax.set_xticks(x_positions, labels, rotation=25, ha="right")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(output_dir / "test_metrics.png", dpi=160)
+    plt.close(fig)
+    print(f"\nГрафики сохранены в: {output_dir}")
