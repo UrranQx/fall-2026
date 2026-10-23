@@ -63,3 +63,12 @@ def load_data(
     X_train = preprocessing.fit_transform(X_train)
     X_test = preprocessing.transform(X_test)
     return X_train, X_test, y_train, y_test
+
+
+if __name__ == "__main__":
+    # print('sadsd')
+    X_train, X_test, y_train, y_test = load_data(test_size=0.3)
+
+    df = pd.DataFrame(X_train)
+    print(df.describe())
+    print(df.info())
