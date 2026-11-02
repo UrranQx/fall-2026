@@ -58,6 +58,7 @@ def main():
     # Сначала изучаем весь спектр только обучающей матрицы.
     # 2. Реализация PCA через сингулярное разложение
     spectrum = PCA().fit(X_train)
+    # 3. Эффективная размерность выборки
     errors = spectrum.calculate_em()
     effective_m = int(np.flatnonzero(errors <= MAX_RECONSTRUCTION_ERROR)[0] + 1)
     plot_reconstruction_error(errors, OUTPUT_DIR / "pca_reconstruction_error.png")
@@ -76,6 +77,7 @@ def main():
     )
     print(f"E_m = {train_error:.8f}")
     print(f"Новые признаки: train {G_train.shape}, test {G_test.shape}")
+    # 4. Сравнение с эталонной реализацией
     compare_models(X_train, X_test, y_train, y_test, pca, spectrum)
 
 
