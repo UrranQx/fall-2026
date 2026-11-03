@@ -32,7 +32,7 @@ def logistic_loss(y, scores):
     return np.mean(np.logaddexp(0.0, -y * scores))
 
 
-def irls(F, y, tol=1e-5, max_iter=100, *, history=None):
+def irls(F, y, tol=1e-5, max_iter=1000, *, history=None):
     """
     F - матрица (l, n), y - одномерный вектор меток (l,).
 
@@ -66,8 +66,9 @@ def irls(F, y, tol=1e-5, max_iter=100, *, history=None):
 
         # МНК даёт приращение коэффициентов - направление Ньютона.
         delta_w = np.linalg.pinv(F_approx) @ y_approx
-        # Полный шаг Ньютона; в общем случае может потребоваться уменьшение.
-        h_t = 1.0
+        # Полный шаг Ньютона
+        # в общем случае может потребоваться уменьшение.
+        h_t = 2 # Подобрал гиперпараметр
         w += h_t * delta_w
 
         sigmas_new = sigmoid(margin(F, y, w))
@@ -100,7 +101,7 @@ def compare_models(F_train, F_test, y_train, y_test, tol=1e-5):
     reference = LogisticRegression(
         C=np.inf,
         fit_intercept=False,
-        solver="newton-cg",
+        solver="newton-cholesky",
         tol=1e-8,
         max_iter=1000,
     )
