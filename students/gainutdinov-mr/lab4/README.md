@@ -50,7 +50,7 @@ def fit(self, X):
 
 Для автономности алгоритма, был специально задан порог, ниже которого отсекались слишком маленькие собственные значения F.T@F.
 
-![alt text](source/report-images/image.png)
+![alt text](/students/gainutdinov-mr/lab4/source/report-images/image.png)
 Сама реализация находится в `PCA.calculate_em`
 
 ```py
@@ -64,15 +64,15 @@ def calculate_em(self):
         return np.array(Ems)
 ```
 Из-за OneHotEncoding эффективная размерность оказалась около 45:
-![alt text](source/figures/pca_reconstruction_error.png)
+![alt text](/students/gainutdinov-mr/lab4/source/figures/pca_reconstruction_error.png)
 ## Сравнение с эталонной реализацией
 Сравнение реализовано в `main.py` - compare_models
 
 Результаты не разочаровывающие - наша реализация практически совпадает с эталонной (Также для сравнения был реализован ridgeRegression):
-![alt text](source/report-images/image-3.png)
+![alt text](/students/gainutdinov-mr/lab4/source/report-images/image-3.png)
 
 Тем не менее посмотрим на результат регресии на одной картинке:
-![alt text](source/figures/model_predictions.png)
+![alt text](/students/gainutdinov-mr/lab4/source/figures/model_predictions.png)
 
 
 ## Вывод
